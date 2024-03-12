@@ -1,0 +1,17 @@
+{
+  "name": "proxy-scraper",
+  "version": "1.0.0",
+  "description": "A Node.js proxy scraper with multi-threading",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^0.24.0",
+    "fs": "0.0.1-security"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
