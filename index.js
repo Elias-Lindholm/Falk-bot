@@ -1,26 +1,4 @@
-const cluster = require('cluster');
-const os = require('os');
-
-if (cluster.isMaster) {
-  // Fork workers based on the number of CPU cores
-  const numCPUs = os.cpus().length;
-  console.log(`Master cluster setting up ${numCPUs} workers...`);
-
-  for (let i = 0; i < numCPUs; i++) {
-    cluster.fork();
-  }
-
-  cluster.on('online', (worker) => {
-    console.log(`Worker ${worker.process.pid} is online`);
-  });
-
-  cluster.on('exit', (worker, code, signal) => {
-    console.log(`Worker ${worker.process.pid} died with code ${code} and signal ${signal}`);
-    console.log('Starting a new worker');
-    cluster.fork();
-  });
-} else {
-  // Worker process code
+(async () => {
   const axios = require('axios');
   const fs = require('fs');
 
@@ -32,47 +10,28 @@ if (cluster.isMaster) {
 
   async function scrapeProxies() {
     try {
-      const proxies = [];
-
       // Fetch proxies from each URL
       for (const url of proxyUrls) {
         const response = await axios.get(url);
         const proxyList = response.data.split('\n');
-        proxies.push(...proxyList);
+        const filteredProxies = proxyList.filter((proxy) => proxy.trim() !== '');
+
+        // Test and save working proxies immediately
+        for (const proxy of filteredProxies) {
+          const isWorking = await testProxyConnection(proxy);
+
+          if (isWorking) {
+            saveProxyToFile(proxy);
+          }
+        }
+
+        console.log(`Scanning for proxies completed from: ${url}`);
       }
 
-      // Remove empty lines
-      const filteredProxies = proxies.filter((proxy) => proxy.trim() !== '');
-
-      // Test and filter working proxies
-      const workingProxies = await testProxies(filteredProxies);
-
-      // Save working proxies to a file
-      saveProxiesToFile(workingProxies);
-
-      console.log(`Worker ${process.pid} completed proxy scraping and testing.`);
-      process.exit(0);
+      console.log('Proxy scraping and testing completed.');
     } catch (error) {
       console.error('Error:', error.message);
-      process.exit(1);
     }
-  }
-
-  async function testProxies(proxies) {
-    const workingProxies = [];
-
-    for (const proxy of proxies) {
-      const isWorking = await testProxyConnection(proxy);
-
-      if (isWorking) {
-        console.log(`Working proxy found: ${proxy}`);
-        workingProxies.push(proxy);
-      } else {
-        console.log(`Non-working proxy: ${proxy}`);
-      }
-    }
-
-    return workingProxies;
   }
 
   async function testProxyConnection(proxy) {
@@ -81,9 +40,8 @@ if (cluster.isMaster) {
         proxy: {
           host: proxy.split(':')[0],
           port: proxy.split(':')[1],
-          // Add other proxy options if necessary
         },
-        timeout: 5000, // Set a timeout for the request
+        timeout: 5000,
       });
 
       return response.status === 200;
@@ -92,18 +50,18 @@ if (cluster.isMaster) {
     }
   }
 
-  function saveProxiesToFile(proxies) {
+  function saveProxyToFile(proxy) {
     const fileName = 'working_proxies.txt';
 
-    fs.writeFile(fileName, proxies.join('\n'), (err) => {
+    fs.appendFile(fileName, proxy + '\n', (err) => {
       if (err) {
-        console.error('Error saving proxies to file:', err.message);
+        console.error(`Error saving proxy to file: ${proxy}`);
       } else {
-        console.log(`Working proxies saved to ${fileName}`);
+        console.log(`Working proxy saved: ${proxy}`);
       }
     });
   }
 
-  // Start the scraping process for each worker
-  scrapeProxies();
-}
+  // Start the continuous scraping process
+  setInterval(scrapeProxies, 60 * 1000); // Scrape proxies every 60 seconds
+})();
