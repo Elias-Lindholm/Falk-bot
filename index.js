@@ -1,67 +1,138 @@
-(async () => {
-  const axios = require('axios');
-  const fs = require('fs');
+const cluster = require('cluster');
+const os = require('os');
+const axios = require('axios');
+const fs = require('fs');
 
-  const proxyUrls = [
-    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
-    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt',
-    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt',
-  ];
+const MAX_CONCURRENT_TESTS = 25;
 
-  async function scrapeProxies() {
-    try {
-      // Fetch proxies from each URL
-      for (const url of proxyUrls) {
-        const response = await axios.get(url);
-        const proxyList = response.data.split('\n');
-        const filteredProxies = proxyList.filter((proxy) => proxy.trim() !== '');
+if (cluster.isMaster) {
+  const numCPUs = os.cpus().length;
+  let totalProxiesScanned = 0;
 
-        // Test and save working proxies immediately
-        for (const proxy of filteredProxies) {
-          const isWorking = await testProxyConnection(proxy);
-
-          if (isWorking) {
-            saveProxyToFile(proxy);
-          }
-        }
-
-        console.log(`Scanning for proxies completed from: ${url}`);
-      }
-
-      console.log('Proxy scraping and testing completed.');
-    } catch (error) {
-      console.error('Error:', error.message);
-    }
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
   }
 
-  async function testProxyConnection(proxy) {
-    try {
-      const response = await axios.get('https://www.example.com/', {
+  cluster.on('online', (worker) => {
+    console.log(`Worker ${worker.process.pid} is online`);
+  });
+
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died with code ${code} and signal ${signal}`);
+    console.log('Starting a new worker');
+    cluster.fork();
+  });
+
+  // Listen for messages from workers
+  cluster.on('message', (worker, message) => {
+    if (message.type === 'progress') {
+      totalProxiesScanned += message.proxiesScanned;
+      console.log(`Worker ${worker.process.pid}: ${message.message} (Total proxies scanned: ${totalProxiesScanned})`);
+    } else {
+      console.log(`Unknown message type received from worker ${worker.process.pid}:`, message);
+    }
+  });
+} else {
+  // Each worker runs its own scraping process
+  scrapeProxies();
+}
+
+async function scrapeProxies() {
+  const proxyUrls = [
+    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+    'https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt',
+  ];
+
+  try {
+    // Fetch proxies from both HTTP URLs
+    const allProxies = [];
+    for (const url of proxyUrls) {
+      const response = await axios.get(url);
+      const proxyList = response.data.split('\n');
+      const filteredProxies = proxyList.filter((proxy) => proxy.trim() !== '');
+      allProxies.push(...filteredProxies);
+    }
+
+    // Shuffle the proxies
+    const shuffledProxies = shuffleArray(allProxies);
+
+    // Process proxies in batches of MAX_CONCURRENT_TESTS
+    for (let i = 0; i < shuffledProxies.length; i += MAX_CONCURRENT_TESTS) {
+      const proxyBatch = shuffledProxies.slice(i, i + MAX_CONCURRENT_TESTS);
+
+      // Test and save working proxies concurrently
+      const results = await Promise.all(proxyBatch.map(testAndSaveProxy));
+
+      // Send progress message to master
+      process.send({ type: 'progress', proxiesScanned: proxyBatch.length, message: `Proxy batch scanned` });
+    }
+
+    console.log(`Proxy scraping and testing completed in worker ${process.pid}`);
+    process.exit(0);
+  } catch (error) {
+    console.error(`Error in worker ${process.pid}:`, error.message);
+    process.exit(1);
+  }
+}
+
+function shuffleArray(array) {
+  const shuffled = array.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
+
+const uniqueProxies = new Set();
+
+async function testAndSaveProxy(proxy) {
+  try {
+    const isWorking = await testProxyConnection(proxy);
+
+    if (isWorking) {
+      // Save unique proxies only
+      if (!uniqueProxies.has(proxy)) {
+        uniqueProxies.add(proxy);
+        saveProxyToFile(proxy);
+        return { proxy, message: `Working proxy saved in worker ${process.pid}: ${proxy}` };
+      } else {
+        return { proxy, message: `Duplicate proxy skipped in worker ${process.pid}: ${proxy}` };
+      }
+    } else {
+      return { proxy, message: `Non-working proxy in worker ${process.pid}: ${proxy}` };
+    }
+  } catch (error) {
+    return { proxy, message: `Error testing proxy in worker ${process.pid}: ${proxy} - ${error.message}` };
+  }
+}
+
+async function testProxyConnection(proxy) {
+  const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+
+  try {
+    const response = await Promise.race([
+      axios.get('https://www.example.com/', {
         proxy: {
           host: proxy.split(':')[0],
           port: proxy.split(':')[1],
         },
-        timeout: 5000,
-      });
+      }),
+      timeoutPromise,
+    ]);
 
-      return response.status === 200;
-    } catch (error) {
-      return false;
+    return response.status === 200;
+  } catch (error) {
+    return false;
+  }
+}
+
+function saveProxyToFile(proxy) {
+  const fileName = 'working_proxies.txt';
+
+  fs.appendFile(fileName, proxy + '\n', (err) => {
+    if (err) {
+      console.error(`Error saving proxy to file in worker ${process.pid}: ${proxy}`);
     }
-  }
-
-  function saveProxyToFile(proxy) {
-    const fileName = 'working_proxies.txt';
-
-    fs.appendFile(fileName, proxy + '\n', (err) => {
-      if (err) {
-        console.error(`Error saving proxy to file: ${proxy}`);
-      } else {
-        console.log(`Working proxy saved: ${proxy}`);
-      }
-    });
-  }
-
-  // Start the continuous scraping process
-  setInterval(scrapeProxies, 60 * 1000); // Scrape proxies every 60 seconds
-})();
+  });
+}
