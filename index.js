@@ -1,3 +1,4 @@
+javascript
 const cluster = require('cluster');
 const os = require('os');
 const axios = require('axios');
@@ -23,7 +24,6 @@ if (cluster.isMaster) {
     cluster.fork();
   });
 
-  // Listen for messages from workers
   cluster.on('message', (worker, message) => {
     if (message.type === 'progress') {
       totalProxiesScanned += message.proxiesScanned;
@@ -33,7 +33,6 @@ if (cluster.isMaster) {
     }
   });
 } else {
-  // Each worker runs its own scraping process
   scrapeProxies();
 }
 
@@ -41,10 +40,11 @@ async function scrapeProxies() {
   const proxyUrls = [
     'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
     'https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt',
+    'https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt',
+    'https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt'
   ];
 
   try {
-    // Fetch proxies from both HTTP URLs
     const allProxies = [];
     for (const url of proxyUrls) {
       const response = await axios.get(url);
@@ -53,17 +53,11 @@ async function scrapeProxies() {
       allProxies.push(...filteredProxies);
     }
 
-    // Shuffle the proxies
     const shuffledProxies = shuffleArray(allProxies);
 
-    // Process proxies in batches of MAX_CONCURRENT_TESTS
     for (let i = 0; i < shuffledProxies.length; i += MAX_CONCURRENT_TESTS) {
       const proxyBatch = shuffledProxies.slice(i, i + MAX_CONCURRENT_TESTS);
-
-      // Test and save working proxies concurrently
       const results = await Promise.all(proxyBatch.map(testAndSaveProxy));
-
-      // Send progress message to master
       process.send({ type: 'progress', proxiesScanned: proxyBatch.length, message: `Proxy batch scanned` });
     }
 
@@ -91,7 +85,6 @@ async function testAndSaveProxy(proxy) {
     const isWorking = await testProxyConnection(proxy);
 
     if (isWorking) {
-      // Save unique proxies only
       if (!uniqueProxies.has(proxy)) {
         uniqueProxies.add(proxy);
         saveProxyToFile(proxy);
